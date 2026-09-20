@@ -77,6 +77,13 @@ test("ships on honest no-change: find_people then finish(false)", async () => {
   assert.equal(reply, "I don't have anyone named Jon yet.");
   assert.equal(store.toJSON().people.length, 0);
   assert.equal(llm.calls.length, 2);
+
+  const findTurn = llm.calls[1][llm.calls[1].length - 1];
+  const tr = findTurn.content.find((b) => b.type === "tool_result" && b.tool_use_id === "toolu_find");
+  // if the find itself errored, this test would silently test the wrong thing
+  assert.ok(tr);
+  assert.ok(!tr.is_error);
+  assert.equal("error" in JSON.parse(tr.content), false);
 });
 
 test("hallucination bounced, then corrected", async () => {

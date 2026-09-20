@@ -127,17 +127,17 @@ test("duplicate-name guard: mutation on a shared-name person without confirmed t
     () => s.updatePerson(1, { context: "x" }),
     /Multiple people named "Akshay" exist/
   );
+  assert.throws(() => s.removeRelationship("parent", 1, 2), /Multiple people named/);
   assert.equal(s.toJSON().parentEdges.length, 0);
   assert.equal(s.toJSON().spouseEdges.length, 0);
   const r = s.addParentEdge(1, 2, true);
   assert.equal(r.child.id, "2");
   assert.equal(s.toJSON().parentEdges.length, 1);
-  try {
-    s.addSpouseEdge(3, 2);
-  } catch (e) {
-    assert.match(e.message, /1 /);
-    assert.match(e.message, /3 /);
-  }
+  assert.throws(() => s.addSpouseEdge(3, 2), (e) => {
+    assert.match(e.message, /1/);
+    assert.match(e.message, /3/);
+    return true;
+  });
 });
 
 test("removeRelationship on absent edge returns alreadyAbsent: true", () => {
@@ -191,8 +191,8 @@ test("ids resolve regardless of type the model sends", () => {
   const canonical = store.getPerson(person.id).id;
   assert.equal(store.getPerson(String(person.id)).id, canonical);
   assert.equal(store.getPerson(Number(person.id)).id, canonical);
-  assert.throws(() => store.getPerson("abc"), /Invalid person id/);
-  assert.throws(() => store.getPerson(-1), /Invalid person id/);
+  assert.throws(() => store.getPerson("abc"), /Unknown person id/);
+  assert.throws(() => store.getPerson(-1), /Unknown person id/);
 });
 
 test("persistence: second GraphStore on same file deep-equals first", () => {
