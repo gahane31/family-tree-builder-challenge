@@ -1,76 +1,50 @@
+// LLM client: callLLM with retry on 429/5xx. SYSTEM_PROMPT/TOOLS live in agent/.
 import Anthropic from "@anthropic-ai/sdk";
+import { SYSTEM_PROMPT } from "../agent/prompt.js";
+import { createLogger } from "../helpers/logger.js";
+import { metrics } from "../helpers/metrics.js";
+
+const log = createLogger("llm");
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
+  baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
 });
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
+export const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
-const SYSTEM_PROMPT = `You are a friendly assistant helping someone describe their family tree in conversation.
-Ask clarifying questions whenever a detail is ambiguous or missing.
-You are currently a plain conversational assistant — you have no way to record or persist
-what the user tells you yet. That piece is intentionally left unimplemented.`;
+const BACKOFF_MS = [500, 1500];
 
-const TOOLS = [
-  {
-    name: "add_person",
-    description: "Add a new person to the family tree.",
-    input_schema: {
-      type: "object",
-      properties: {
-        id: { type: "string" },
-        name: { type: "string" },
-      },
-      required: ["id", "name"],
-    },
-  }
-];
-
-function runTool(name) {
-  if (name === "add_person") {
-    return "Person added successfully";
-  }
-  throw new Error(`Unknown tool: ${name}`);
+function isRetryable(err) {
+  const status = err?.status ?? err?.response?.status;
+  if (status === 429) return true;
+  if (status >= 500 && status < 600) return true;
+  return false;
 }
 
-/**
- * Sends a conversation to the model and returns its plain-text reply.
- * Runs an agentic loop: if the model responds with tool_use blocks, the
- * requested tools are executed and their results are fed back until the
- * model returns a plain text reply.
- *
- * @param {Array<{role: "user" | "assistant", content: string}>} messages
- * @returns {Promise<string>}
- */
-export async function getChatReply(messages) {
-  let conversation = messages;
-
-  while (true) {
-    const response = await anthropic.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      tools: TOOLS,
-      messages: conversation,
-    });
-
-    const toolUseBlocks = response.content.filter((block) => block.type === "tool_use");
-    if (toolUseBlocks.length === 0) {
-      const textBlock = response.content.find((block) => block.type === "text");
-      return textBlock?.text ?? "";
+export async function callLLM(messages, tools) {
+  const maxAttempts = 3;
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    metrics.inc("llmCalls");
+    try {
+      return await anthropic.messages.create({
+        model: MODEL,
+        //max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        tools,
+        messages,
+      });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts - 1 && isRetryable(err)) {
+        metrics.inc("llmRetries");
+        log.warn("llm retry", { attempt: attempt + 1, status: err?.status, message: err.message });
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+        continue;
+      }
+      throw err;
     }
-
-    conversation = [
-      ...conversation,
-      { role: "assistant", content: response.content },
-      {
-        role: "user",
-        content: toolUseBlocks.map((block) => ({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: runTool(block.name),
-        })),
-      },
-    ];
   }
+  throw lastErr;
 }
